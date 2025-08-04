@@ -7,6 +7,15 @@ import threading
 import os
 import time
 import logic
+import logging
+import logging_config
+from logging_config import log_queue
+from queue import Empty
+
+# 在 main 函数或脚本开始处
+logging_config.setup_logging()
+logging_config.setup_exception_handling() # 设置全局异常钩子
+logger = logging.getLogger(__name__)
 
 try:
     from plexapi.server import PlexServer
@@ -30,6 +39,7 @@ def on_extract():
     input_text = playlist_entry.get()
     playlist_id = logic.extract_playlist_id(input_text)
     if not playlist_id:
+        logger.error("无法识别歌单ID或链接")
         messagebox.showerror("错误", "无法识别歌单ID或链接")
         return
 
@@ -60,15 +70,20 @@ def on_extract():
                 extract_button.config(state=tk.NORMAL)
             root.after(0, update_gui_with_songs)
         except ValueError as e:
+            logger.error(f"获取歌单失败：{e}", exc_info=True)
             root.after(0, lambda: messagebox.showerror("错误", f"获取歌单失败：{e}"))
             root.after(0, lambda: update_status_bar(f"提取失败：{e}"))
         except requests.exceptions.ConnectionError as e:
-            root.after(0, lambda: messagebox.showerror("网络错误", f"无法连接到服务器: {e}"))
+            error_msg = f"无法连接到服务器: {e}"
+            logger.error(error_msg, exc_info=True)
+            root.after(0, lambda: messagebox.showerror("网络错误", error_msg))
             root.after(0, lambda: update_status_bar(f"提取失败：网络连接错误"))
         except requests.exceptions.Timeout:
+            logger.error("请求超时", exc_info=True)
             root.after(0, lambda: messagebox.showerror("网络错误", "请求超时，请检查网络连接或稍后再试。"))
             root.after(0, lambda: update_status_bar(f"提取失败：请求超时"))
         except Exception as e:
+            logger.critical(f"发生未知错误：{e}", exc_info=True)
             root.after(0, lambda: messagebox.showerror("未知错误", f"发生未知错误：{e}"))
             root.after(0, lambda: update_status_bar(f"提取失败：{e}"))
         finally:
@@ -130,10 +145,12 @@ def show_unmatched_songs_window(unmatched_list):
 
 def on_import_to_plex():
     if PlexServer is None:
+        logger.error("PlexAPI库未安装。")
         messagebox.showerror("错误", "PlexAPI库未安装。\n请在命令行执行: pip install plexapi")
         return
 
     if not current_playlist:
+        logger.warning("试图导入空歌单。")
         messagebox.showinfo("提示", "当前歌单为空，请先提取歌曲。")
         return
 
@@ -144,9 +161,11 @@ def on_import_to_plex():
     import_mode_val = plex_import_mode_var.get()
 
     if not all([plex_url, plex_token]):
+        logger.error("Plex服务器URL或Token为空。")
         messagebox.showerror("错误", "请输入Plex服务器URL和Token。")
         return
     if import_mode_val == "update_existing" and not plex_playlist_name_str:
+        logger.error("更新模式下Plex播放列表名称为空。")
         messagebox.showerror("错误", "选择“更新/覆盖现有”模式时，请输入Plex播放列表名称。")
         return
 
@@ -190,9 +209,54 @@ def on_import_to_plex():
 
 def update_status_bar(text):
     status_var.set(text)
+    logger.info(f"状态更新: {text}")
     root.update_idletasks()
 
 # ------------- GUI 界面布局 -------------
+
+class LogViewer(ttk.Frame):
+    def __init__(self, parent, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.log_text = tk.Text(self, wrap=tk.WORD, height=8, state=tk.DISABLED)
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.log_text.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+
+        # 定义颜色标签
+        self.log_text.tag_config('INFO', foreground='black')
+        self.log_text.tag_config('DEBUG', foreground='gray')
+        self.log_text.tag_config('WARNING', foreground='orange')
+        self.log_text.tag_config('ERROR', foreground='red', font=('Helvetica', '9', 'bold'))
+        self.log_text.tag_config('CRITICAL', foreground='red', background='yellow', font=('Helvetica', '9', 'bold'))
+
+    def add_log_message(self, record):
+        # 从 record 中提取级别和消息
+        level = record.levelname
+        msg = record.getMessage()
+        # 格式化最终消息
+        formatted_msg = f"{record.asctime} - {record.name} - {level} - {msg}\n"
+
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, formatted_msg, record.levelname)
+        self.log_text.config(state=tk.DISABLED)
+        self.log_text.yview(tk.END)
+
+def poll_log_queue(log_viewer_widget):
+    while True:
+        try:
+            record = log_queue.get(block=False)
+            log_viewer_widget.add_log_message(record)
+        except Empty:
+            break
+    # 每 100ms 检查一次
+    root.after(100, poll_log_queue, log_viewer_widget)
+
+
 root = tk.Tk()
 root.title("网易云 / QQ音乐 歌单提取及Plex导入工具")
 
@@ -202,9 +266,10 @@ status_var = tk.StringVar()
 plex_cfg = logic.load_plex_config()
 current_playlist = []
 
-# ... (GUI布局的其余部分，main_paned_window, extraction_frame_container, song_list_main_frame, plex_frame_container, status_bar 不变) ...
 main_paned_window = ttk.PanedWindow(root, orient=tk.VERTICAL)
 main_paned_window.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+# ... (extraction_frame_container, song_list_main_frame, plex_frame_container 不变) ...
 extraction_frame_container = ttk.Frame(main_paned_window, padding=5)
 main_paned_window.add(extraction_frame_container, weight=0)
 extraction_frame_container.grid_columnconfigure(1, weight=1)
@@ -217,6 +282,7 @@ playlist_entry = ttk.Entry(extraction_frame_container)
 playlist_entry.grid(row=1, column=1, pady=5, sticky="ew")
 extract_button = ttk.Button(extraction_frame_container, text="提取歌单", command=on_extract)
 extract_button.grid(row=2, column=0, columnspan=2, pady=10, sticky="ew")
+
 song_list_main_frame = ttk.Frame(main_paned_window, padding=5)
 main_paned_window.add(song_list_main_frame, weight=1)
 song_list_main_frame.grid_rowconfigure(0, weight=1)
@@ -239,6 +305,7 @@ list_btn_frame.grid_columnconfigure(0, weight=1)
 list_btn_frame.grid_columnconfigure(1, weight=1)
 ttk.Button(list_btn_frame, text="删除选中", command=on_delete_selected).pack(side=tk.LEFT, padx=5, expand=True)
 ttk.Button(list_btn_frame, text="清空歌单", command=on_clear).pack(side=tk.LEFT, padx=5, expand=True)
+
 plex_frame_container = ttk.LabelFrame(main_paned_window, text="Plex导入设置", padding=10)
 main_paned_window.add(plex_frame_container, weight=0)
 plex_frame_container.grid_columnconfigure(1, weight=1)
@@ -260,12 +327,22 @@ ttk.Label(plex_frame_container, text="Plex 播放列表名:").grid(row=3, column
 plex_playlist_name_entry = ttk.Entry(plex_frame_container, width=40)
 plex_playlist_name_entry.grid(row=3, column=1, padx=5, pady=2, sticky="ew")
 plex_playlist_name_entry.insert(0, plex_cfg.get("plex_playlist_name", "导入的歌单"))
-ttk.Label(plex_frame_container, text="(“更新/覆盖”模式下使用此名称；“创建新的”模式下会自动生成名称)").grid(row=4, column=1, padx=5, pady=(0,5), sticky="w", columnspan=1) # 修正：columnspan 应为1或2，取决于布局意图
+ttk.Label(plex_frame_container, text="(“更新/覆盖”模式下使用此名称；“创建新的”模式下会自动生成名称)").grid(row=4, column=1, padx=5, pady=(0,5), sticky="w", columnspan=1)
 import_plex_button = ttk.Button(plex_frame_container, text="导入到Plex", command=on_import_to_plex)
 import_plex_button.grid(row=5, column=0, columnspan=2, pady=10, sticky="ew")
+
+# 添加日志查看器
+log_frame = ttk.LabelFrame(main_paned_window, text="日志", padding=5)
+main_paned_window.add(log_frame, weight=0) # weight=0 表示初始高度较小
+log_viewer = LogViewer(log_frame)
+log_viewer.pack(fill=tk.BOTH, expand=True)
+
 status_bar = ttk.Label(root, textvariable=status_var, relief=tk.SUNKEN, anchor=tk.W, padding=2)
 status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 update_status_bar("就绪。")
 
-root.minsize(550, 650)
+# 启动日志队列轮询
+poll_log_queue(log_viewer)
+
+root.minsize(550, 750) # 增加最小高度以容纳日志面板
 root.mainloop()

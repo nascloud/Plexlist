@@ -4,6 +4,9 @@ import threading
 import re
 import os
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     from thefuzz import fuzz
@@ -92,10 +95,10 @@ def fetch_netease_playlist(playlist_id):
             res_songs.raise_for_status()
             songs_batch_data = res_songs.json()
         except requests.exceptions.RequestException as e:
-            print(f"Warning: 请求歌曲详情失败 (batch starting at {i}): {e}")
+            logger.warning(f"请求歌曲详情失败 (batch starting at {i}): {e}")
             continue
         except json.JSONDecodeError:
-            print(f"Warning: 解析歌曲详情响应失败 (batch starting at {i})。")
+            logger.warning(f"解析歌曲详情响应失败 (batch starting at {i})。")
             continue
 
         if 'songs' in songs_batch_data:
@@ -104,7 +107,7 @@ def fetch_netease_playlist(playlist_id):
                 artists = ", ".join([artist.get('name', '未知歌手') for artist in track_detail.get('ar', [])])
                 all_songs_output.append((name, artists))
         else:
-            print(f"Warning: Batch for song details (starting index {i}) did not return 'songs' key.")
+            logger.warning(f"Batch for song details (starting index {i}) did not return 'songs' key.")
     return all_songs_output, playlist_title # 返回歌曲和标题
 
 def fetch_qq_playlist(playlist_id):
@@ -171,7 +174,7 @@ def find_plex_track(plex, song_name, artist_name):
     3. 全局模糊匹配：如果找不到艺术家，则在全局搜索歌名，再对结果进行模糊匹配。
     """
     if fuzz is None:
-        print("警告: 'thefuzz' 库未安装，无法进行模糊匹配。请执行 'pip install thefuzz python-Levenshtein'")
+        logger.warning("'thefuzz' 库未安装，无法进行模糊匹配。请执行 'pip install thefuzz python-Levenshtein'")
         return None
 
     # 标准化输入
@@ -201,7 +204,7 @@ def find_plex_track(plex, song_name, artist_name):
                             best_match = track
 
                 if highest_score > 85:
-                    print(f"  模糊匹配成功 (艺术家内): '{song_name}' -> '{best_match.title}' (相似度: {highest_score})")
+                    logger.info(f"模糊匹配成功 (艺术家内): '{song_name}' -> '{best_match.title}' (相似度: {highest_score})")
                     return best_match
 
         # --- 策略3：全局模糊搜索 (备用，较慢) ---
@@ -223,11 +226,11 @@ def find_plex_track(plex, song_name, artist_name):
                     best_match = track
           
             if highest_score > 90:
-                print(f"  模糊匹配成功 (全局): '{song_name}' -> '{best_match.title}' (综合分: {highest_score:.0f})")
+                logger.info(f"模糊匹配成功 (全局): '{song_name}' -> '{best_match.title}' (综合分: {highest_score:.0f})")
                 return best_match
 
     except Exception as e:
-        print(f"在Plex中搜索音轨时出错 '{song_name} - {artist_name}': {e}")
+        logger.error(f"在Plex中搜索音轨时出错 '{song_name} - {artist_name}'", exc_info=True)
   
     return None
 
@@ -338,7 +341,7 @@ def _import_to_plex_worker(plex_url, plex_token, plex_playlist_name_input, songs
             else:
                 # not_found_count +=1 # 这个计数器现在由 unmatched_songs_list.append 隐式完成
                 unmatched_songs_list.append((song_name, artist_name)) # <--- 收集未匹配的歌曲
-                print(f"  Plex中未找到: {song_name} - {artist_name}")
+                logger.info(f"Plex中未找到: {song_name} - {artist_name}")
         
         if plex_tracks_to_add:
             progress_callback(f"正在将 {len(plex_tracks_to_add)} 首歌曲添加到Plex播放列表 '{target_plex_playlist_name}'...")
