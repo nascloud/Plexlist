@@ -6,6 +6,11 @@ import os
 import time
 
 try:
+    from thefuzz import fuzz
+except ImportError:
+    fuzz = None
+
+try:
     from plexapi.server import PlexServer
     from plexapi.exceptions import NotFound, Unauthorized
 except ImportError:
@@ -145,32 +150,85 @@ def extract_playlist_id(url_or_id):
     else:
         return None
 
+def normalize_string(text):
+    """标准化字符串，用于模糊比较。"""
+    if not text:
+        return ""
+    # 转换为小写
+    text = text.lower()
+    # 移除常见的多余词语和符号
+    text = re.sub(r"[\(\[].*?[\)\]]", "", text) # 移除括号和括号内的内容
+    text = re.sub(r"deluxe|explicit|remastered|feat\.|ft\.", "", text)
+    # 移除所有非字母和数字的字符
+    text = re.sub(r'[^\w\s]', '', text)
+    return text.strip()
+
 def find_plex_track(plex, song_name, artist_name):
-    norm_song_name = song_name.lower()
-    norm_artist_name = ""
-    if artist_name and isinstance(artist_name, str):
-        norm_artist_name = artist_name.lower().split(',')[0].strip()
+    """
+    在Plex中查找音轨，采用多策略匹配：
+    1. 精确匹配：尝试直接用歌曲名和艺术家名搜索。
+    2. 艺术家内模糊匹配：先找到艺术家，再在其所有歌曲中模糊匹配歌名。
+    3. 全局模糊匹配：如果找不到艺术家，则在全局搜索歌名，再对结果进行模糊匹配。
+    """
+    if fuzz is None:
+        print("警告: 'thefuzz' 库未安装，无法进行模糊匹配。请执行 'pip install thefuzz python-Levenshtein'")
+        return None
+
+    # 标准化输入
+    norm_song_name = normalize_string(song_name)
+    norm_artist_name = normalize_string(artist_name)
+
     try:
-        for section in plex.library.sections():
-            if section.type == 'artist':
-                results = section.searchTracks(title=song_name)
-                if results:
-                    for track in results:
-                        plex_track_artists_lower = []
-                        if hasattr(track, 'artists') and track.artists:
-                            plex_track_artists_lower = [a.title.lower() for a in track.artists if a.title]
-                        elif hasattr(track, 'artist') and track.artist() and track.artist().title:
-                             plex_track_artists_lower = [track.artist().title.lower()]
-                        elif track.grandparentTitle:
-                            plex_track_artists_lower = [track.grandparentTitle.lower()]
-                        if not norm_artist_name and results: # 艺术家名为空时，标题匹配即可
-                            return track
-                        if any(norm_artist_name in p_artist for p_artist in plex_track_artists_lower):
-                            return track
-                        if not plex_track_artists_lower and norm_artist_name and norm_artist_name in track.title.lower():
-                            return track
+        # --- 策略1：精确搜索 (最快) ---
+        if artist_name:
+            results = plex.library.search(song_name, libtype='track', artist=artist_name)
+            if results:
+                return results[0]
+
+        # --- 策略2：在艺术家内进行模糊匹配 (推荐) ---
+        if norm_artist_name:
+            artists = plex.library.search(norm_artist_name, libtype='artist')
+            if artists:
+                best_match = None
+                highest_score = 0
+                for artist in artists:
+                    for track in artist.tracks():
+                        plex_norm_title = normalize_string(track.title)
+                        score = fuzz.partial_ratio(norm_song_name, plex_norm_title)
+                      
+                        if score > highest_score:
+                            highest_score = score
+                            best_match = track
+
+                if highest_score > 85:
+                    print(f"  模糊匹配成功 (艺术家内): '{song_name}' -> '{best_match.title}' (相似度: {highest_score})")
+                    return best_match
+
+        # --- 策略3：全局模糊搜索 (备用，较慢) ---
+        results = plex.library.search(song_name, libtype='track')
+        if results:
+            best_match = None
+            highest_score = 0
+            for track in results:
+                plex_norm_title = normalize_string(track.title)
+                plex_norm_artist = normalize_string(track.artist().title if track.artist() else "")
+              
+                title_score = fuzz.partial_ratio(norm_song_name, plex_norm_title)
+                artist_score = 100 if not norm_artist_name else fuzz.ratio(norm_artist_name, plex_norm_artist)
+              
+                combined_score = (title_score * 0.7) + (artist_score * 0.3)
+
+                if combined_score > highest_score:
+                    highest_score = combined_score
+                    best_match = track
+          
+            if highest_score > 90:
+                print(f"  模糊匹配成功 (全局): '{song_name}' -> '{best_match.title}' (综合分: {highest_score:.0f})")
+                return best_match
+
     except Exception as e:
-        print(f"Error searching Plex track '{song_name} - {artist_name}': {e}")
+        print(f"在Plex中搜索音轨时出错 '{song_name} - {artist_name}': {e}")
+  
     return None
 
 def _import_to_plex_worker(plex_url, plex_token, plex_playlist_name_input, songs_to_import,
