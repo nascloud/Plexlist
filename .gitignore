@@ -10,3 +10,4 @@ logs/
 
 # Virtual environments
 .venv
+plex_config.json
