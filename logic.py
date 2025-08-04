@@ -236,133 +236,129 @@ def find_plex_track(plex, song_name, artist_name):
 
 def _import_to_plex_worker(plex_url, plex_token, plex_playlist_name_input, songs_to_import,
                            import_mode, source_platform_name, original_playlist_title_hint,
-                           progress_callback, completion_callback):
-   """Worker function to run in a separate thread."""
-   unmatched_songs_list = []
-   # 在函数开始时，最终歌单名称还未确定，但我们可以先用输入值
-   target_plex_playlist_name = plex_playlist_name_input
+                           task_id, task_status_dict):
+    """Worker function to run in a separate thread and report progress."""
+    
+    total_count = len(songs_to_import)
 
-   if PlexServer is None:
-       # completion_callback(success, message, unmatched_songs, final_playlist_name)
-       completion_callback(False, "PlexAPI库未安装。请先执行 'pip install plexapi'。", [], target_plex_playlist_name)
-       return
+    def update_status(status, message, processed=None, total=None, unmatched=None):
+        """Helper to update the shared task status dictionary."""
+        task_status_dict[task_id] = {
+            "status": status,
+            "message": message,
+            "progress": processed if processed is not None else task_status_dict[task_id].get("progress"),
+            "total": total if total is not None else task_status_dict[task_id].get("total"),
+            "unmatched_songs": unmatched if unmatched is not None else task_status_dict[task_id].get("unmatched_songs", [])
+        }
+        logger.info(f"Task {task_id}: {status} - {message}")
 
-   try:
-       plex = PlexServer(plex_url, plex_token, timeout=20)
-       try:
-           plex.clients()
-       except Unauthorized:
-           completion_callback(False, "Plex授权失败：Token无效或服务器URL不正确。", [], target_plex_playlist_name)
-           return
-       except requests.exceptions.ConnectionError:
-           completion_callback(False, f"无法连接到Plex服务器：{plex_url}", [], target_plex_playlist_name)
-           return
-       except Exception as e:
-           completion_callback(False, f"连接Plex时发生错误: {e}", [], target_plex_playlist_name)
-           return
+    update_status("processing", "任务开始...", processed=0, total=total_count)
 
-       plex_playlist = None
-       # target_plex_playlist_name 已在函数开头初始化
+    unmatched_songs_list = []
+    target_plex_playlist_name = plex_playlist_name_input
 
-       if import_mode == "create_new":
-           timestamp = time.strftime("%Y%m%d-%H%M%S")
-           base_name = original_playlist_title_hint if original_playlist_title_hint and original_playlist_title_hint != "未知歌单" else "导入歌单"
-           target_plex_playlist_name = f"来自{source_platform_name} - {base_name} ({timestamp})"
-           progress_callback(f"准备创建新的Plex播放列表：'{target_plex_playlist_name}'")
-           try:
-               music_sections = [s for s in plex.library.sections() if s.type == 'artist']
-               if not music_sections:
-                   completion_callback(False, "Plex库中找不到音乐内容，无法创建播放列表。", [], target_plex_playlist_name)
-                   return
-               first_track_in_library = music_sections[0].all(libtype='track', maxresults=1)[0]
-               plex_playlist = plex.createPlaylist(target_plex_playlist_name, items=[first_track_in_library])
-               plex_playlist.removeItems([first_track_in_library])
-               progress_callback(f"已创建新的Plex播放列表：'{target_plex_playlist_name}'")
-           except IndexError:
-               completion_callback(False, "Plex音乐库为空，无法创建播放列表的参照。", [], target_plex_playlist_name)
-               return
-           except Exception as e:
-               completion_callback(False, f"创建新的Plex播放列表 '{target_plex_playlist_name}' 时出错: {e}", [], target_plex_playlist_name)
-               return
-       elif import_mode == "update_existing":
-           progress_callback(f"准备更新/覆盖Plex播放列表：'{target_plex_playlist_name}'")
-           try:
-               plex_playlist = plex.playlist(target_plex_playlist_name)
-               if plex_playlist:
-                   progress_callback(f"找到现有播放列表 '{target_plex_playlist_name}'，将清空并重新添加。")
-                   plex_playlist.removeItems(plex_playlist.items())
-               else:
-                   progress_callback(f"播放列表 '{target_plex_playlist_name}' 不存在，将创建它。")
-                   music_sections = [s for s in plex.library.sections() if s.type == 'artist']
-                   if not music_sections:
-                       completion_callback(False, "Plex库中找不到音乐内容，无法创建播放列表。", [], target_plex_playlist_name)
-                       return
-                   first_track_in_library = music_sections[0].all(libtype='track', maxresults=1)[0]
-                   plex_playlist = plex.createPlaylist(target_plex_playlist_name, items=[first_track_in_library])
-                   plex_playlist.removeItems([first_track_in_library])
-                   progress_callback(f"已创建播放列表：'{target_plex_playlist_name}'")
-           except NotFound:
-               progress_callback(f"在“更新模式”下，播放列表 '{target_plex_playlist_name}' 未找到，将尝试创建。")
-               try:
-                   music_sections = [s for s in plex.library.sections() if s.type == 'artist']
-                   if not music_sections:
-                       completion_callback(False, "Plex库中找不到音乐内容，无法创建播放列表。", [], target_plex_playlist_name)
-                       return
-                   first_track_in_library = music_sections[0].all(libtype='track', maxresults=1)[0]
-                   plex_playlist = plex.createPlaylist(target_plex_playlist_name, items=[first_track_in_library])
-                   plex_playlist.removeItems([first_track_in_library])
-                   progress_callback(f"已创建新的Plex播放列表：'{target_plex_playlist_name}'")
-               except IndexError:
-                   completion_callback(False, "Plex音乐库为空，无法创建播放列表的参照。", [], target_plex_playlist_name)
-                   return
-               except Exception as e:
-                   completion_callback(False, f"创建播放列表 '{target_plex_playlist_name}' 时出错: {e}", [], target_plex_playlist_name)
-                   return
-           except Exception as e:
-               completion_callback(False, f"处理Plex播放列表 '{target_plex_playlist_name}' 时出错: {e}", [], target_plex_playlist_name)
-               return
-       else:
-           completion_callback(False, "无效的Plex导入模式。", [], target_plex_playlist_name)
-           return
+    if PlexServer is None:
+        update_status("error", "PlexAPI库未安装。请先执行 'pip install plexapi'。")
+        return
 
-       if not plex_playlist:
-           completion_callback(False, f"未能为 '{target_plex_playlist_name}' 获取或创建Plex播放列表对象。", [], target_plex_playlist_name)
-           return
+    try:
+        update_status("processing", "正在连接到Plex服务器...")
+        plex = PlexServer(plex_url, plex_token, timeout=20)
+        try:
+            plex.clients()
+        except Unauthorized:
+            update_status("error", "Plex授权失败：Token无效或服务器URL不正确。")
+            return
+        except requests.exceptions.ConnectionError:
+            update_status("error", f"无法连接到Plex服务器：{plex_url}")
+            return
+        except Exception as e:
+            update_status("error", f"连接Plex时发生错误: {e}")
+            return
 
-       found_count = 0
-       plex_tracks_to_add = []
+        plex_playlist = None
+        
+        if import_mode == "create_new":
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            base_name = original_playlist_title_hint if original_playlist_title_hint and original_playlist_title_hint != "未知歌单" else "导入歌单"
+            target_plex_playlist_name = f"来自{source_platform_name} - {base_name} ({timestamp})"
+            update_status("processing", f"准备创建新的Plex播放列表：'{target_plex_playlist_name}'")
+            try:
+                music_sections = [s for s in plex.library.sections() if s.type == 'artist']
+                if not music_sections:
+                    update_status("error", "Plex库中找不到音乐内容，无法创建播放列表。")
+                    return
+                first_track_in_library = music_sections[0].all(libtype='track', maxresults=1)[0]
+                plex_playlist = plex.createPlaylist(target_plex_playlist_name, items=[first_track_in_library])
+                plex_playlist.removeItems([first_track_in_library])
+                update_status("processing", f"已创建新的Plex播放列表：'{target_plex_playlist_name}'")
+            except IndexError:
+                update_status("error", "Plex音乐库为空，无法创建播放列表的参照。")
+                return
+            except Exception as e:
+                update_status("error", f"创建新的Plex播放列表 '{target_plex_playlist_name}' 时出错: {e}")
+                return
+        elif import_mode == "update_existing":
+            target_plex_playlist_name = plex_playlist_name_input
+            update_status("processing", f"准备更新/覆盖Plex播放列表：'{target_plex_playlist_name}'")
+            try:
+                plex_playlist = plex.playlist(target_plex_playlist_name)
+                update_status("processing", f"找到现有播放列表 '{target_plex_playlist_name}'，将清空并重新添加。")
+                plex_playlist.removeItems(plex_playlist.items())
+            except NotFound:
+                update_status("processing", f"播放列表 '{target_plex_playlist_name}' 不存在，将创建它。")
+                try:
+                    music_sections = [s for s in plex.library.sections() if s.type == 'artist']
+                    if not music_sections:
+                        update_status("error", "Plex库中找不到音乐内容，无法创建播放列表。")
+                        return
+                    first_track_in_library = music_sections[0].all(libtype='track', maxresults=1)[0]
+                    plex_playlist = plex.createPlaylist(target_plex_playlist_name, items=[first_track_in_library])
+                    plex_playlist.removeItems([first_track_in_library])
+                except IndexError:
+                    update_status("error", "Plex音乐库为空，无法创建播放列表的参照。")
+                    return
+                except Exception as e:
+                    update_status("error", f"创建播放列表 '{target_plex_playlist_name}' 时出错: {e}")
+                    return
+            except Exception as e:
+                update_status("error", f"处理Plex播放列表 '{target_plex_playlist_name}' 时出错: {e}")
+                return
+        else:
+            update_status("error", "无效的Plex导入模式。")
+            return
 
-       for i, (song_name, artist_name) in enumerate(songs_to_import):
-           progress_callback(f"正在处理: {i+1}/{len(songs_to_import)} - {song_name} ({target_plex_playlist_name})")
-           plex_track = find_plex_track(plex, song_name, artist_name)
-           if plex_track:
-               plex_tracks_to_add.append(plex_track)
-               found_count += 1
-           else:
-               unmatched_songs_list.append((song_name, artist_name))
-               logger.info(f"Plex中未找到: {song_name} - {artist_name}")
-       
-       if plex_tracks_to_add:
-           progress_callback(f"正在将 {len(plex_tracks_to_add)} 首歌曲添加到Plex播放列表 '{target_plex_playlist_name}'...")
-           try:
-               plex_playlist.addItems(plex_tracks_to_add)
-               progress_callback(f"添加完成。")
-           except Exception as e:
-               completion_callback(False, f"添加到Plex播放列表 '{target_plex_playlist_name}' 时出错: {e}", unmatched_songs_list, target_plex_playlist_name)
-               return
-       
-       final_message = (
-           f"Plex导入到 '{target_plex_playlist_name}' 完成！\n"
-           f"成功匹配并添加: {found_count}首\n"
-           f"未在Plex中找到: {len(unmatched_songs_list)}首"
-       )
-       completion_callback(True, final_message, unmatched_songs_list, target_plex_playlist_name)
+        if not plex_playlist:
+            update_status("error", f"未能为 '{target_plex_playlist_name}' 获取或创建Plex播放列表对象。")
+            return
 
-   except Unauthorized:
-       completion_callback(False, "Plex授权失败：Token无效或服务器URL不正确。", [], target_plex_playlist_name)
-   except requests.exceptions.ConnectionError:
-       completion_callback(False, f"无法连接到Plex服务器：{plex_url}", [], target_plex_playlist_name)
-   except requests.exceptions.Timeout:
-       completion_callback(False, "连接Plex服务器超时。", [], target_plex_playlist_name)
-   except Exception as e:
-       completion_callback(False, f"Plex导入过程中发生未知错误: {e}", [], target_plex_playlist_name)
+        found_count = 0
+        plex_tracks_to_add = []
+
+        for i, (song_name, artist_name) in enumerate(songs_to_import):
+            update_status("processing", f"正在处理: {song_name}", processed=i + 1)
+            plex_track = find_plex_track(plex, song_name, artist_name)
+            if plex_track:
+                plex_tracks_to_add.append(plex_track)
+                found_count += 1
+            else:
+                unmatched_songs_list.append((song_name, artist_name))
+                logger.info(f"Plex中未找到: {song_name} - {artist_name}")
+        
+        if plex_tracks_to_add:
+            update_status("processing", f"正在将 {len(plex_tracks_to_add)} 首歌曲添加到Plex播放列表...", processed=len(songs_to_import))
+            try:
+                plex_playlist.addItems(plex_tracks_to_add)
+            except Exception as e:
+                update_status("error", f"添加到Plex播放列表 '{target_plex_playlist_name}' 时出错: {e}", unmatched=unmatched_songs_list)
+                return
+        
+        final_message = (
+            f"Plex导入到 '{target_plex_playlist_name}' 完成！ "
+            f"成功匹配: {found_count}首, 未找到: {len(unmatched_songs_list)}首"
+        )
+        update_status("completed", final_message, processed=total_count, unmatched=unmatched_songs_list)
+
+    except Exception as e:
+        logger.error(f"Plex导入过程中发生未知错误 (Task {task_id})", exc_info=True)
+        update_status("error", f"Plex导入过程中发生未知错误: {e}", unmatched=unmatched_songs_list)

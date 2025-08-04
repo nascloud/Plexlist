@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plexlist</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Plexlist</h1>
+
+    <div class="container">
+        <h2>Plex 配置</h2>
+        <form id="plex-config-form">
+            <label for="plex-url">Plex URL:</label>
+            <input type="text" id="plex-url" name="plex_url" required>
+
+            <label for="plex-token">Plex Token:</label>
+            <input type="text" id="plex-token" name="plex_token" required>
+
+            <label for="playlist-name">默认播放列表名称:</label>
+            <input type="text" id="playlist-name" name="playlist_name" value="Plexlist" required>
+
+            <label for="import-mode">导入模式:</label>
+            <select id="import-mode" name="import_mode">
+                <option value="create_new">创建新列表</option>
+                <option value="update_existing">更新现有列表</option>
+            </select>
+
+            <button type="submit">保存配置</button>
+        </form>
+    </div>
+
+    <div class="container">
+        <h2>提取歌单</h2>
+        <form id="extract-form">
+            <label for="playlist-url">歌单 URL 或 ID:</label>
+            <input type="text" id="playlist-url" name="playlist_url" required>
+
+            <label for="platform">平台:</label>
+            <select id="platform" name="platform">
+                <option value="netease">网易云音乐</option>
+                <option value="qqmusic">QQ音乐</option>
+            </select>
+
+            <button type="submit">提取歌单</button>
+            <div id="loader" class="loader" style="display: none;"></div>
+        </form>
+    </div>
+
+    <div class="container" id="status-container" style="display: none;">
+        <h2>导入状态</h2>
+        <progress id="import-progress-bar" value="0" max="100" style="width: 100%; display: none;"></progress>
+        <p id="import-status-message" style="margin-top: 10px;"></p>
+        <span id="import-progress-text"></span>
+    </div>
+
+    <div class="container" id="results-container" style="display: none;">
+        <h2>提取结果</h2>
+        <button id="import-to-plex" style="display: none;">导入到 Plex</button>
+        <ul id="song-list"></ul>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
