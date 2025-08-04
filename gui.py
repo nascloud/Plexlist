@@ -108,41 +108,6 @@ def on_clear():
     messagebox.showinfo("提示", "歌单已清空。")
     update_status_bar("歌单已清空。")
 
-# 新增函数：显示未匹配的歌曲
-def show_unmatched_songs_window(unmatched_list):
-    if not unmatched_list:
-        return # 如果列表为空，则不显示窗口
-
-    unmatched_window = tk.Toplevel(root)
-    unmatched_window.title("Plex中未匹配到的歌曲")
-    unmatched_window.geometry("500x400")
-    unmatched_window.grab_set() # 模态化，阻止与其他窗口交互直到关闭
-
-    label = ttk.Label(unmatched_window, text=f"以下 {len(unmatched_list)} 首歌曲未能自动匹配到Plex库中：")
-    label.pack(pady=10)
-
-    text_frame = ttk.Frame(unmatched_window)
-    text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
-
-    unmatched_text = tk.Text(text_frame, wrap=tk.WORD, height=15, width=60)
-    unmatched_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-    scrollbar = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=unmatched_text.yview)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    unmatched_text.configure(yscrollcommand=scrollbar.set)
-
-    for song_name, artist_name in unmatched_list:
-        unmatched_text.insert(tk.END, f"{song_name} - {artist_name}\n")
-    
-    unmatched_text.config(state=tk.DISABLED) # 设置为只读
-
-    close_button = ttk.Button(unmatched_window, text="关闭", command=unmatched_window.destroy)
-    close_button.pack(pady=10)
-
-    unmatched_window.transient(root) # 设置为 root 的子窗口
-    unmatched_window.focus_set() # 设置焦点
-
-
 def on_import_to_plex():
     if PlexServer is None:
         logger.error("PlexAPI库未安装。")
@@ -181,18 +146,54 @@ def on_import_to_plex():
         root.after(0, lambda: update_status_bar(message))
 
     # 修改 completion_callback 以接收 unmatched_songs
-    def completion_callback(success, message, unmatched_songs):
+    def completion_callback(success, message, unmatched_songs, final_playlist_name="未知歌单"):
         root.after(0, lambda: import_plex_button.config(state=tk.NORMAL))
-        root.after(0, lambda: update_status_bar(message))
-        if success:
-            root.after(0, lambda: messagebox.showinfo("Plex导入", message))
-            if unmatched_songs: # 如果有未匹配的歌曲
-                root.after(100, lambda: show_unmatched_songs_window(unmatched_songs)) # 稍作延迟显示
+        
+        failed_count = len(unmatched_songs)
+        
+        # 从 message 中提取总数
+        total_match = re.search(r'共 (\d+) 首', message)
+        if total_match:
+            total_count = int(total_match.group(1))
         else:
-            root.after(0, lambda: messagebox.showerror("Plex导入失败", message))
-            # 即使失败，也可能有一些未匹配的记录（比如连接成功但部分匹配失败）
-            if unmatched_songs:
-                 root.after(100, lambda: show_unmatched_songs_window(unmatched_songs))
+            # 如果无法从消息中解析，则基于当前列表长度估算
+            total_count = len(current_playlist)
+
+        success_count = total_count - failed_count
+
+        final_message = f"处理完成！\n成功: {success_count}, 失败: {failed_count}."
+        
+        if unmatched_songs:
+            log_dir = "logs"
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            # 在文件名中包含播放列表名称的清理版本，以便于识别
+            safe_playlist_name = re.sub(r'[\\/*?:"<>|]', "", final_playlist_name)[:50]
+            filename = os.path.join(log_dir, f"unmatched_{safe_playlist_name}_{timestamp}.txt")
+            
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    # 首先写入歌单名称
+                    f.write(f"歌单名称: {final_playlist_name}\n\n")
+                    # 然后写入未匹配的歌曲
+                    for song_name, artist_name in unmatched_songs:
+                        f.write(f"{song_name} - {artist_name}\n")
+                logger.info(f"未匹配的歌曲列表已保存到 {filename}")
+                formatted_path = filename.replace('\\', '/')
+                final_message += f"\n\n失败列表已保存至: {formatted_path}"
+            except IOError as e:
+                logger.error(f"无法写入未匹配的歌曲日志文件: {e}")
+                final_message += f"\n\n尝试保存失败列表时出错。"
+
+        root.after(0, lambda: update_status_bar(f"Plex导入处理完成。成功: {success_count}, 失败: {failed_count}"))
+        
+        if success:
+            root.after(0, lambda: messagebox.showinfo("Plex导入完成", final_message))
+        else:
+            # 对于失败情况，也显示汇总信息
+            root.after(0, lambda: messagebox.showerror("Plex导入失败", final_message))
 
 
     songs_to_import_copy = list(current_playlist)
@@ -203,7 +204,7 @@ def on_import_to_plex():
                               args=(plex_url, plex_token, plex_playlist_name_str,
                                     songs_to_import_copy, import_mode_val,
                                     source_platform, original_title_hint,
-                                    progress_callback, completion_callback), # completion_callback现在会接收unmatched_songs
+                                    progress_callback, completion_callback),
                               daemon=True)
     thread.start()
 
